@@ -1,11 +1,12 @@
 (ns rautavaara.app
-  (:require [reagent.dom :as r.dom]))
+  (:require [reagent.dom :as r.dom]
+            [rautavaara.viewer]))
 
 (defn app []
   "hi there, hello there")
 
 (defn mount []
-  (r.dom/render [app] (js/document.getElementById "root")))
+  (r.dom/render [rautavaara.viewer/root] (js/document.getElementById "root")))
 
 (defn ^:dev/after-load re-render []
   (mount))
