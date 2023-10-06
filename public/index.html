@@ -1,5 +1,7 @@
 <!doctype html>
 <html>
+  <!-- todo move this script into npm deps -->
+<script src="https://unpkg.com/resize-observer-polyfill@1.5.1/dist/ResizeObserver.polyfill.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond&family=Open+Sans:wght@300&display=swap"
@@ -14,6 +16,15 @@ margin: 0;
 h1, h2, h3, h4, h5, h6 {
   font-family: 'Open Sans', sans-serif;
   font-weight: 300;
+}
+.notebook {
+  width: 720px;
+  margin: 0 auto;
+}
+.vertical-resize {
+  overflow: hidden;
+  resize: vertical;
+  box-sizing: content-box;
 }
 
   </style>
