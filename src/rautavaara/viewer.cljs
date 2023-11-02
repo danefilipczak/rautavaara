@@ -12,7 +12,9 @@
   [:pre
    (with-out-str (clojure.pprint/pprint x))])
 
-(defn spy [x] (.log js/console x) x)
+(defn spy [x] 
+  (.log js/console (print-str x))
+  x)
 (defn pitch-set [x]
   ;;eventually pitch/pitch-set, but that isn't stable at this time because the protocol implememntation isn't clj-safe
   ;;
@@ -41,6 +43,7 @@
 
 (defn start [ast] (:start ast))
 (defn duration [ast] (:duration ast))
+(defn children [ast] (:children ast))
 (defn attrs [ast] (:percolated-attrs ast))
 
 (defn sub-path? [path-1 path-2]
@@ -63,8 +66,8 @@
 
 (defn nearest-era [ast path]
   (if (era? (get-in ast (leramir.ast/ast-path path)))
-    ast
-    (:path (get-in ast (leramir.ast/ast-path (pop path))))))
+    (get-in ast (leramir.ast/ast-path path))
+    (get-in ast (leramir.ast/ast-path (pop path)))))
 
 (comment
 
@@ -74,6 +77,7 @@
 ;;; end move into core.ast
 
 (def highlight-color "#AADE91")
+(def contrast-color #_:lightgrey :whitesmoke)
 
 (defn piano-roll* [{:keys [width height ast active-path]}]
   (let [pitches (sort (mapcat (comp pitch-set value) (values ast)))
@@ -97,7 +101,7 @@
                             #{0 2 4 5 7 9 11}
                             (int (mod nn 12)))
                          :white
-                         :whitesmoke)
+                         contrast-color)
                  :x 0
                  :y (nn->height nn)
                  :width width
@@ -174,6 +178,54 @@
      #_(translate 0 margin-height
                   (piano-roll width piano-roll-height path-value-map))]))
 
+(defn extract-voices [node]
+  (apply
+   merge-with
+   concat
+   {(:voice node) [[(start node) (end node)]]}
+   (map extract-voices (children node))))
+
+(defn lexicographic-comparator [vector-a vector-b]
+  (loop [v1 vector-a
+         v2 vector-b]
+    (cond
+      (empty? v1) (if (empty? v2) 0 -1)
+      (empty? v2) 1
+      :else
+      (let [cmp (compare (first v1) (first v2))]
+        (if (zero? cmp)
+          (recur (rest v1) (rest v2))
+          cmp)))))
+
+(defn jared [{:keys [era width height]}]
+  (def era era)
+  (let [ranges-by-voice (extract-voices (leramir.ast/standard-interpretation era))
+        sorted-voices (sort lexicographic-comparator (keys ranges-by-voice))
+        
+        per-voice (/ height (count sorted-voices)) 
+        last-end (last (sort (mapcat (fn [ranges]
+                                       (map (comp r/realize second) ranges))
+                                     (vals ranges-by-voice))))
+        rescale-tv-time (fn [tv-time] (float (utils.math/map-range (r/realize tv-time) 0 last-end 0 width)))
+        total-height height]
+    [:svg
+     {:width width
+      :height total-height}
+     (for [[i voice] (partition 2 (interleave (range) sorted-voices))
+           :let [ranges (get ranges-by-voice voice)] 
+           [start end :as range] ranges]
+       [:g {:key (print-str [voice range])}
+        (translate 0 (* per-voice i)
+                   [:text {:dominant-baseline :hanging
+                           :x (rescale-tv-time start)
+                           :font-family :helvetica
+                           :font-size 8
+                           :y 0}
+                    (str voice i)]
+                   (bracket (rescale-tv-time start)
+                            (rescale-tv-time end)
+                            per-voice))])]))
+
 (defn piano-roll [{:keys [era width height] :as attrs}]
   [piano-roll*
    (merge attrs {:ast (leramir.ast/standard-interpretation era)})])
@@ -207,10 +259,55 @@
 (defn resizable-div [initial-height component attrs]
   [:f> resizable-div* initial-height component attrs])
 
+(defn inspector [{:keys [era active-path width] :as attrs}]
+  (let [ast (leramir.ast/standard-interpretation era)
+        parent-path (cond-> active-path (not-empty active-path) pop) 
+        parent-era (get-in ast (leramir.ast/ast-path parent-path))]
+    [:div {:style {:width "100%"
+                   :height "26px" 
+                   :position :relative}}
+     (doall
+      (for [child (children parent-era)
+            :let [display (cond
+                            (era? child) (:tag child)
+                            (set? (value child)) #{}
+                            :else (value child))
+                  active? (= active-path (:path child))]]
+        [:div
+         {:style {:position :absolute
+                  :top 0
+                  :width (str (* 100 (r/realize (duration child))) "%") 
+                  :left (str (* 100 (r/realize (start child))) "%")
+                  :text-decoration (when active? "underline")}}
+         [:span 
+          {:style {:font-family "monospace" :font-size "12px"}}
+          (print-str display)]]))]))
+
 (defn visualize-era [{:keys [era width] :as attrs}]
   [:<>
    [resizable-div 100 voice-tree attrs]
+   [resizable-div 100 jared attrs]
+   [inspector attrs]
    [resizable-div 300 piano-roll attrs]])
+
+(defn buttons [ast active-path]
+  [:<>
+   [:button
+    {:on-click #(when-let [d (down ast @active-path)] 
+                  (reset! active-path d))}
+    "down"]
+   [:button
+    {:on-click #(when-let [d (up ast @active-path)] 
+                  (reset! active-path d))}
+    "up"]
+   [:button
+    {:on-click #(when-let [d (left ast @active-path)] 
+                  (reset! active-path d))}
+    "left"]
+   [:button
+    {:on-click #(when-let [d (right ast @active-path)] 
+                  (reset! active-path d))}
+    "right"]])
 
 (defn editor [era on-change]
   (let [active-path (reagent.core/atom [])]
@@ -222,42 +319,28 @@
           {:era era
            :on-change on-change
            :active-path @active-path}]
-         [:button
-          {:on-click #(when-let [d (down ast @active-path)]
-                        (spy d)
-                        (reset! active-path d))}
-          "down"]
-         [:button
-          {:on-click #(when-let [d (up ast @active-path)]
-                        (spy d)
-                        (reset! active-path d))}
-          "up"]
-         [:button
-          {:on-click #(when-let [d (left ast @active-path)]
-                        (spy d)
-                        (reset! active-path d))}
-          "left"]
-         [:button
-          {:on-click #(when-let [d (right ast @active-path)]
-                        (spy d)
-                        (reset! active-path d))}
-          "right"]
+         [buttons ast active-path]
          #_[pprint current-node]]))))
 
 (defn root []
   (let [era (reagent.core/atom
-             [:era 2 3 #{4 5 6} [:heap 2
+             [:era 2 3 [:chain #{4 5 6} #{4 5 6}] [:heap 2
                                  [:era  2 3]
                                  [2 3]
                                  1 3 5 7 13]])]
     (fn []
       [:<>
        [:div.notebook
-        [:h1 "UI ideas"]]
+        [:h1 "UI ideas"]
+        [:p "hello you tricky devil"]]
        [editor @era (fn [new-era]
                       (reset! era new-era))]
-       [:br]
-       [:svg]])))
+       [:div.notebook
+        [:p "todo: disable keys if that action cannot be taken"]
+        [:p "todo: first partition into highlighted and non-highlighted things. The highlighted must render on top."]
+        [:h2 "Notes for the future"]
+        [:p "If we can go no further right, try to go down"]
+        [:p "If we can go no further left, try to go up"]]])))
 
 
 (comment
