@@ -287,26 +287,33 @@
   [:<>
    [resizable-div 100 voice-tree attrs]
    [resizable-div 100 jared attrs]
-   [inspector attrs]
+   ;; this inspector should instead be an excel-style single line read/edit window. 
+   ;; the children of eras should be represented by ...n where n is the count of the children. clicking on that will expand it one level. 
+   ;; trickily, the view should also be edit-able so that values can be manually entered.
+   #_[inspector attrs]
    [resizable-div 300 piano-roll attrs]])
 
 (defn buttons [ast active-path]
   [:<>
    [:button
     {:on-click #(when-let [d (down ast @active-path)] 
-                  (reset! active-path d))}
+                  (reset! active-path d))
+     :disabled (not (down ast @active-path))}
     "down"]
    [:button
     {:on-click #(when-let [d (up ast @active-path)] 
-                  (reset! active-path d))}
+                  (reset! active-path d))
+     :disabled (not (up ast @active-path))}
     "up"]
    [:button
     {:on-click #(when-let [d (left ast @active-path)] 
-                  (reset! active-path d))}
+                  (reset! active-path d))
+     :disabled (not (left ast @active-path))}
     "left"]
    [:button
     {:on-click #(when-let [d (right ast @active-path)] 
-                  (reset! active-path d))}
+                  (reset! active-path d))
+     :disabled (not (right ast @active-path))}
     "right"]])
 
 (defn editor [era on-change]
@@ -335,8 +342,7 @@
         [:p "hello you tricky devil"]]
        [editor @era (fn [new-era]
                       (reset! era new-era))]
-       [:div.notebook
-        [:p "todo: disable keys if that action cannot be taken"]
+       [:div.notebook 
         [:p "todo: first partition into highlighted and non-highlighted things. The highlighted must render on top."]
         [:h2 "Notes for the future"]
         [:p "If we can go no further right, try to go down"]
