@@ -3,6 +3,6 @@
   thheller/shadow-cljs {:mvn/version "2.16.10"} 
   com.hyperfiddle/rcf {:mvn/version "20220926-202227"}
   danefilipczak/leramir {:git/url "https://github.com/danefilipczak/leramir.git"
-                         :sha "5219d73faf8db059f6b370368e1db6ab89c6ec2d"}
+                         :sha "512001d1842924b4c013a35e73ec8e8454177073"}
   danefilipczak/rational {:git/url "https://github.com/danefilipczak/rational.git"
                           :sha "4f2fe225f223ddb92a4749167320a76baed088e9"}}}

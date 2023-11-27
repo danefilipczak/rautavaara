@@ -1,18 +1,18 @@
 (ns rautavaara.viewer
-  (:require [leramir.ast :as ast]
+  (:require [clojure.pprint]
+            [leramir.ast :as ast]
+            [leramir.core :as core]
             [leramir.types.timed-value :as tv]
             [leramir.utils.math :as utils.math]
-            [leramir.core :as core]
+            [rational.core :as r]
             [react :as react]
-            [reagent.core]
-            [clojure.pprint]
-            [rational.core :as r]))
+            [reagent.core]))
 
 (defn pprint [x]
   [:pre
    (with-out-str (clojure.pprint/pprint x))])
 
-(defn spy [x] 
+(defn spy [x]
   (.log js/console (print-str x))
   x)
 (defn pitch-set [x]
@@ -24,68 +24,21 @@
         #{x}
         :else #{}))
 
-;;; begin move into core.ast
-
-(defn era? [ast]
-  (= ::leramir.ast/era (:type ast)))
-
-(defn values* [result ast]
-  (if (era? ast)
-    (apply concat result (map (partial values* result) (:children ast)))
-    (conj result ast)))
-
-(defn values [ast]
-  (values* [] ast))
-
-(defn value [ast] (:value ast))
-
-(defn end [ast] (r/+ (:start ast) (:duration ast)))
-
-(defn start [ast] (:start ast))
-(defn duration [ast] (:duration ast))
-(defn children [ast] (:children ast))
-(defn attrs [ast] (:percolated-attrs ast))
-
-(defn sub-path? [path-1 path-2]
-  (= path-1 (vec (take (count path-1) path-2))))
-
-(defn up [ast path]
-  (when (> (count path) 0)
-    (:path (get-in ast (leramir.ast/ast-path (pop path))))))
-
-(defn down [ast path]
-  (:path (get-in ast (leramir.ast/ast-path (conj path 0)))))
-
-(defn left [ast path]
-  (when (and (not-empty path) (> (peek path) 0))
-    (:path (get-in ast (leramir.ast/ast-path (conj (pop path) (dec (peek path))))))))
-
-(defn right [ast path]
-  (when (not-empty path)
-    (:path (get-in ast (leramir.ast/ast-path (conj (pop path) (inc (peek path))))))))
-
 (defn nearest-era [ast path]
-  (if (era? (get-in ast (leramir.ast/ast-path path)))
+  (if (ast.era? (get-in ast (leramir.ast/ast-path path)))
     (get-in ast (leramir.ast/ast-path path))
     (get-in ast (leramir.ast/ast-path (pop path)))))
-
-(comment
-
-  (parent [13 2] (leramir.ast/standard-interpretation [1 2 3]))
-  (pop [1 2 3 4]))
-
-;;; end move into core.ast
 
 (def highlight-color "#AADE91")
 (def contrast-color #_:lightgrey :whitesmoke)
 
 (defn piano-roll* [{:keys [width height ast active-path]}]
-  (let [pitches (sort (mapcat (comp pitch-set value) (values ast)))
+  (let [pitches (sort (mapcat (comp pitch-set ast/value) (ast/values ast)))
         min-pitch (first pitches)
         max-pitch (last pitches)
         stave (reverse (range min-pitch (inc max-pitch)))
         height-per-stave (float (/ height (count stave)))
-        last-end (last (sort (map (comp r/realize end) (values ast))))
+        last-end (last (sort (map (comp r/realize ast/end) (ast/values ast))))
         rescale-tv-time (fn [tv-time] (float (utils.math/map-range (r/realize tv-time) 0 last-end 0 width)))
         nn->i (zipmap stave (range))
         nn->height (fn [nn]
@@ -106,21 +59,26 @@
                  :y (nn->height nn)
                  :width width
                  :height height-per-stave}])
-             (for [v (values ast)
-                   :let [pitch-set (pitch-set (value v))
-                         active? (sub-path? active-path (:path v))
-                         color (or (:color (attrs v)) (when active? highlight-color))]
-                   nn pitch-set
-                   :when nn]
-               [:rect
-                {:key (print-str (conj (:path v) nn))
-                 :stroke (if active? :black :gainsboro)
-                 :stroke-width 0.5
-                 :fill (or color :black)
-                 :x (rescale-tv-time (start v))
-                 :y (nn->height nn)
-                 :width (rescale-tv-time (duration v))
-                 :height height-per-stave}]))]))
+             (let [values (ast/values ast)
+                   {active true non-active false} (group-by #(ast/sub-path? active-path (:path %)) values)
+                   draw-things (fn [things active?]
+                                 (for [v things
+                                       :let [pitch-set (pitch-set (ast/value v))
+                                             color (or (:color (ast/attrs v)) (when active? highlight-color))]
+                                       nn pitch-set
+                                       :when nn]
+                                   [:rect
+                                    {:key (print-str (conj (:path v) nn))
+                                     :stroke (if active? :black :gainsboro)
+                                     :stroke-width 0.5
+                                     :fill (or color :black)
+                                     :x (rescale-tv-time (ast/start v))
+                                     :y (nn->height nn)
+                                     :width (rescale-tv-time (ast/duration v))
+                                     :height height-per-stave}]))]
+               [:<>
+                (draw-things non-active false)
+                (draw-things active true)]))]))
 
 (defn bracket [from to height]
   (let [attrs {:stroke :black}]
@@ -182,8 +140,8 @@
   (apply
    merge-with
    concat
-   {(:voice node) [[(start node) (end node)]]}
-   (map extract-voices (children node))))
+   {(:voice node) [node]}
+   (map extract-voices (ast/children node))))
 
 (defn lexicographic-comparator [vector-a vector-b]
   (loop [v1 vector-a
@@ -197,34 +155,53 @@
           (recur (rest v1) (rest v2))
           cmp)))))
 
-(defn jared [{:keys [era width height]}]
+(defn jared [{:keys [era width height active-path]}]
   (def era era)
-  (let [ranges-by-voice (extract-voices (leramir.ast/standard-interpretation era))
-        sorted-voices (sort lexicographic-comparator (keys ranges-by-voice))
-        
-        per-voice (/ height (count sorted-voices)) 
-        last-end (last (sort (mapcat (fn [ranges]
-                                       (map (comp r/realize second) ranges))
-                                     (vals ranges-by-voice))))
+  (let [nodes-by-voice (extract-voices (leramir.ast/standard-interpretation era))
+        ->range (fn [node] [(ast/start node) (ast/end node)])
+        sorted-voices (sort lexicographic-comparator (keys nodes-by-voice))
+        per-voice (/ height (count sorted-voices))
+        last-end (->> nodes-by-voice
+                      vals
+                      (map (fn [nodes]
+                             (map ->range nodes)))
+                      (mapcat (fn [ranges]
+                                (map (comp r/realize second) ranges)))
+                      sort
+                      last)
         rescale-tv-time (fn [tv-time] (float (utils.math/map-range (r/realize tv-time) 0 last-end 0 width)))
         total-height height]
     [:svg
      {:width width
       :height total-height}
-     (for [[i voice] (partition 2 (interleave (range) sorted-voices))
-           :let [ranges (get ranges-by-voice voice)] 
-           [start end :as range] ranges]
-       [:g {:key (print-str [voice range])}
-        (translate 0 (* per-voice i)
-                   [:text {:dominant-baseline :hanging
-                           :x (rescale-tv-time start)
-                           :font-family :helvetica
-                           :font-size 8
-                           :y 0}
-                    (str voice i)]
-                   (bracket (rescale-tv-time start)
-                            (rescale-tv-time end)
-                            per-voice))])]))
+     (doall
+      (for [[i voice] (partition 2 (interleave (range) sorted-voices))
+            :let [nodes (get nodes-by-voice voice)]
+            node nodes
+            :let [[start end :as range] (->range node)
+                  active? (ast/sub-path? active-path (:path node))]]
+        [:g {:key (print-str [voice (:path node)])}
+         (translate 0 (* per-voice i)
+                    (when active?
+                      [:rect
+                       {:key (print-str [range voice])
+                        #_#_:stroke (if active? :black :gainsboro)
+                        :stroke-width 0.5
+                        :fill highlight-color
+                        :x (rescale-tv-time start)
+                        :y 0
+                        :width (- (rescale-tv-time end) (rescale-tv-time start))
+                        :height per-voice}])
+                    [:text {:dominant-baseline :hanging
+                            :x (rescale-tv-time start)
+                            :font-family :helvetica
+                            :font-size 8
+                            :y 0}
+                     #_(str voice i)
+                     (str (:path node))]
+                    (bracket (rescale-tv-time start) 
+                             (rescale-tv-time end)
+                             per-voice))]))]))
 
 (defn piano-roll [{:keys [era width height] :as attrs}]
   [piano-roll*
@@ -261,31 +238,31 @@
 
 (defn inspector [{:keys [era active-path width] :as attrs}]
   (let [ast (leramir.ast/standard-interpretation era)
-        parent-path (cond-> active-path (not-empty active-path) pop) 
+        parent-path (cond-> active-path (not-empty active-path) pop)
         parent-era (get-in ast (leramir.ast/ast-path parent-path))]
     [:div {:style {:width "100%"
-                   :height "26px" 
+                   :height "26px"
                    :position :relative}}
      (doall
-      (for [child (children parent-era)
+      (for [child (ast/children parent-era)
             :let [display (cond
-                            (era? child) (:tag child)
-                            (set? (value child)) #{}
-                            :else (value child))
+                            (ast.era? child) (:tag child)
+                            (set? (ast/value child)) #{}
+                            :else (ast/value child))
                   active? (= active-path (:path child))]]
         [:div
          {:style {:position :absolute
                   :top 0
-                  :width (str (* 100 (r/realize (duration child))) "%") 
-                  :left (str (* 100 (r/realize (start child))) "%")
+                  :width (str (* 100 (r/realize (ast/duration child))) "%")
+                  :left (str (* 100 (r/realize (ast/start child))) "%")
                   :text-decoration (when active? "underline")}}
-         [:span 
+         [:span
           {:style {:font-family "monospace" :font-size "12px"}}
           (print-str display)]]))]))
 
 (defn visualize-era [{:keys [era width] :as attrs}]
   [:<>
-   [resizable-div 100 voice-tree attrs]
+   #_[resizable-div 100 voice-tree attrs]
    [resizable-div 100 jared attrs]
    ;; this inspector should instead be an excel-style single line read/edit window. 
    ;; the children of eras should be represented by ...n where n is the count of the children. clicking on that will expand it one level. 
@@ -296,24 +273,24 @@
 (defn buttons [ast active-path]
   [:<>
    [:button
-    {:on-click #(when-let [d (down ast @active-path)] 
+    {:on-click #(when-let [d (ast/down ast @active-path)]
                   (reset! active-path d))
-     :disabled (not (down ast @active-path))}
+     :disabled (not (ast/down ast @active-path))}
     "down"]
    [:button
-    {:on-click #(when-let [d (up ast @active-path)] 
+    {:on-click #(when-let [d (ast/up ast @active-path)]
                   (reset! active-path d))
-     :disabled (not (up ast @active-path))}
+     :disabled (not (ast/up ast @active-path))}
     "up"]
    [:button
-    {:on-click #(when-let [d (left ast @active-path)] 
+    {:on-click #(when-let [d (ast/left ast @active-path)]
                   (reset! active-path d))
-     :disabled (not (left ast @active-path))}
+     :disabled (not (ast/left ast @active-path))}
     "left"]
    [:button
-    {:on-click #(when-let [d (right ast @active-path)] 
+    {:on-click #(when-let [d (ast/right ast @active-path)]
                   (reset! active-path d))
-     :disabled (not (right ast @active-path))}
+     :disabled (not (ast/right ast @active-path))}
     "right"]])
 
 (defn editor [era on-change]
@@ -327,26 +304,45 @@
            :on-change on-change
            :active-path @active-path}]
          [buttons ast active-path]
+         [:pre (print-str @active-path)]
          #_[pprint current-node]]))))
 
 (defn root []
-  (let [era (reagent.core/atom
-             [:era 2 3 [:chain #{4 5 6} #{4 5 6}] [:heap 2
-                                 [:era  2 3]
-                                 [2 3]
-                                 1 3 5 7 13]])]
+  (let [era1 (reagent.core/atom
+              [:era 2 3 [:chain #{4 5 6} #{4 5 6}] [:heap 2
+                                                    [:era  2 3]
+                                                    [2 3]
+                                                    1 3 5 7 13]])
+        era2 (reagent.core/atom
+              [:chain 1 2 3 4])
+        era3 (reagent.core/atom
+              [:era 2 3 [:chain #{4 5 6} #{4 5 6}] [:heap 2
+                                                    [:era  2 3]
+                                                    [2 3]
+                                                    1 3 5 7 13]])]
     (fn []
       [:<>
-       [:div.notebook
-        [:h1 "UI ideas"]
-        [:p "hello you tricky devil"]]
-       [editor @era (fn [new-era]
-                      (reset! era new-era))]
-       [:div.notebook 
-        [:p "todo: first partition into highlighted and non-highlighted things. The highlighted must render on top."]
-        [:h2 "Notes for the future"]
-        [:p "If we can go no further right, try to go down"]
-        [:p "If we can go no further left, try to go up"]]])))
+       [:<>
+        [:div.notebook
+         [:h1 "UI ideas"]
+         [:p "hello you tricky devil, is this thing on?"]]
+        [editor @era1 (fn [new-era]
+                        (reset! era new-era))]
+        [:pre (print-str @era1)]]
+       [:<>
+        [:div.notebook]
+        [editor @era2 (fn [new-era]
+                        (reset! era new-era))]
+        [:pre (print-str @era2)]]
+       [:<>
+        [:div.notebook]
+        [editor @era3 (fn [new-era]
+                        (reset! era new-era))]
+        [:pre (print-str @era3)]
+        [:div.notebook
+         [:h2 "Notes for the future"]
+         [:p "If we can go no further right, try to go down"]
+         [:p "If we can go no further left, try to go up"]]]])))
 
 
 (comment
